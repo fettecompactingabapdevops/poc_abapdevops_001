@@ -1,0 +1,172 @@
+  METHOD add_su53_evaluation.
+*"--- DATA DEFINITION --------------------------------------------------
+    DATA: BEGIN OF inttab,
+            field TYPE xufield,
+            value TYPE xuval,
+          END OF inttab.
+    DATA: lv_text_auth_check    TYPE string VALUE mc_text_auth_check,
+          lv_text_current_check TYPE string VALUE mc_text_current_check,
+          lv_text_temp          TYPE string,
+          lv_index              TYPE string,
+          lv_checks_since_time  TYPE timestampl,
+          lv_checks_start_time  TYPE timestamp,
+          lv_check_time         TYPE timestamp,
+          lv_checks_end_time    TYPE timestamp,
+          lv_since_hours        TYPE timestampl,
+          lt_su53buf            TYPE cl_susr_tools_kernel=>tt_usr07p,
+          lr_su53buf            TYPE REF TO cl_susr_tools_kernel=>ty_usr07p,
+          lv_retcode            TYPE sy-subrc,
+          lt_usr07_new          TYPE TABLE OF usr07,
+          ls_usr07_new          LIKE LINE OF lt_usr07_new,
+          lv_lines_usr07        TYPE i,
+          lv_lines_usr07_s      TYPE string,
+          lt_inttab             LIKE TABLE OF inttab,
+          ls_inttab             LIKE LINE OF lt_inttab,
+          lv_c                  TYPE char255,
+          lv_temp               TYPE char255,
+          lv_pos                TYPE i,
+          lv_class              TYPE xuobjclass,
+          lv_xutext             TYPE xutext,
+          lv_date_start_n       TYPE char10,
+          lv_time_start_n       TYPE char8,
+          lv_date_start         TYPE dats,
+          lv_time_start         TYPE tims.
+    FIELD-SYMBOLS: <ls_usr07_new> LIKE LINE OF lt_usr07_new,
+                   <ls_inttab>    LIKE LINE OF lt_inttab.
+*"--- PROCESSING LOGIC -------------------------------------------------
+    " Read last hours from shared memory
+    GET TIME STAMP FIELD lv_checks_since_time.
+    lv_checks_end_time = lv_checks_since_time.
+
+    TRY.
+        CALL METHOD cl_abap_tstmp=>subtractsecs
+          EXPORTING
+            tstmp   = lv_checks_since_time
+            secs    = mc_last_sec_su53
+          RECEIVING
+            r_tstmp = lv_checks_since_time.
+      CATCH cx_parameter_invalid_range cx_parameter_invalid_type.
+        GET TIME STAMP FIELD lv_checks_since_time.
+    ENDTRY.
+    lv_since_hours = lv_checks_since_time.
+
+    CALL METHOD cl_susr_tools_kernel=>get_su53_buffer
+      EXPORTING
+        iv_bname         = sy-uname
+        iv_no_auth_only  = abap_true
+        iv_max_entries   = mc_last_entries_su53
+        iv_entries_since = lv_checks_since_time
+      IMPORTING
+        et_su53_buffer   = lt_su53buf
+        ev_entries_since = lv_checks_since_time
+        ev_retcode       = lv_retcode.
+
+    lv_checks_start_time = lv_checks_since_time.
+
+    IF lv_retcode EQ 0.
+      SORT lt_su53buf BY timestamp DESCENDING.
+
+      LOOP AT lt_su53buf REFERENCE INTO lr_su53buf.
+        MOVE-CORRESPONDING lr_su53buf->* TO ls_usr07_new.
+        APPEND ls_usr07_new TO lt_usr07_new.
+      ENDLOOP.
+
+      DELETE ADJACENT DUPLICATES FROM lt_usr07_new.
+      lv_lines_usr07_s = lv_lines_usr07 = lines( lt_usr07_new ).
+    ENDIF.
+
+    " data found?
+    IF lv_lines_usr07 > 0.
+      " add header
+      add_text( EXPORTING iv_type = '_CONCATENATE_AND_APPEND' iv_text = mc_header_su53 CHANGING cv_text = lv_c cv_text_final = ev_text ).
+      " add user information
+      add_text( EXPORTING iv_type = '_AT_POS' iv_text = 'User:' iv_pos = '4' CHANGING cv_text = lv_c ).
+      add_text( EXPORTING iv_type = '_AT_POS' iv_text = sy-uname iv_pos = '11' CHANGING cv_text = lv_c ).
+      " add system information
+      add_text( EXPORTING iv_type = '_AT_POS' iv_text = 'System:' iv_pos = '30' CHANGING cv_text = lv_c ).
+      add_text( EXPORTING iv_type = '_AT_POS' iv_text = sy-sysid iv_pos = '39' CHANGING cv_text = lv_c ).
+      add_text( EXPORTING iv_type = '_AT_POS' iv_text = 'Client:' iv_pos = '54' CHANGING cv_text = lv_c ).
+      add_text( EXPORTING iv_type = '_AT_POS_AND_APPEND' iv_text = sy-mandt iv_pos = '63' CHANGING cv_text = lv_c cv_text_final = ev_text ).
+      " add separator line
+      add_text( EXPORTING iv_type = '_CONCATENATE_AND_APPEND' iv_text = mc_separator CHANGING cv_text = lv_c cv_text_final = ev_text ).
+      add_text( EXPORTING iv_type = '_APPEND_LINE' CHANGING cv_text = lv_c cv_text_final = ev_text ).
+
+      " output last auth. check
+      REPLACE '&1' IN lv_text_auth_check WITH lv_lines_usr07_s.
+      add_text( EXPORTING iv_type = '_CONCATENATE_AND_APPEND' iv_text = lv_text_auth_check CHANGING cv_text = lv_c cv_text_final = ev_text ).
+
+      " now add found SU53 data
+      LOOP AT lt_usr07_new ASSIGNING <ls_usr07_new>.
+        " set counter: # of checks
+        lv_index = sy-tabix.
+        add_text( EXPORTING iv_type = '_APPEND_LINE' CHANGING cv_text = lv_c cv_text_final = ev_text ).
+        " '*** Check # &1 ***********************************************************'
+        lv_text_temp = lv_text_current_check.
+        REPLACE '&1' IN lv_text_temp WITH lv_index.
+        add_text( EXPORTING iv_type = '_CONCATENATE_AND_APPEND' iv_text = lv_text_temp CHANGING cv_text = lv_c cv_text_final = ev_text ).
+
+        " add timestamp of check
+        CLEAR: lv_check_time, lv_date_start, lv_time_start, lv_date_start_n, lv_time_start_n.
+        MOVE <ls_usr07_new>-timestamp TO lv_check_time.
+        CONVERT TIME STAMP lv_check_time TIME ZONE sy-zonlo INTO DATE lv_date_start TIME lv_time_start.
+        WRITE: lv_date_start TO lv_date_start_n, lv_time_start TO lv_time_start_n.
+        add_text( EXPORTING iv_type = '_CONCATENATE' iv_text = 'Date/Time:' CHANGING cv_text = lv_c ).
+        add_text( EXPORTING iv_type = '_AT_POS' iv_text = lv_date_start_n iv_pos = '15' CHANGING cv_text = lv_c ).
+        add_text( EXPORTING iv_type = '_AT_POS_AND_APPEND' iv_text = lv_time_start_n iv_pos = '28' CHANGING cv_text = lv_c cv_text_final = ev_text ).
+
+        "add name of transaction
+        add_text( EXPORTING iv_type = '_CONCATENATE' iv_text = 'Transaction:' CHANGING cv_text = lv_c ).
+        IF <ls_usr07_new>-tcode IS NOT INITIAL.
+          add_text( EXPORTING iv_type = '_AT_POS_AND_APPEND' iv_text = <ls_usr07_new>-tcode iv_pos = '15' CHANGING cv_text = lv_c cv_text_final = ev_text ).
+        ELSE.
+          add_text( EXPORTING iv_type = '_AT_POS_AND_APPEND' iv_text = '- unknown -' iv_pos = '15' CHANGING cv_text = lv_c cv_text_final = ev_text ).
+        ENDIF.
+
+        add_text( EXPORTING iv_type = '_CONCATENATE' iv_text = 'Object:' CHANGING cv_text = lv_c ).
+        add_text( EXPORTING iv_type = '_AT_POS_AND_APPEND' iv_text = <ls_usr07_new>-objct iv_pos = '15' CHANGING cv_text = lv_c cv_text_final = ev_text ).
+
+        " technical information for last checked object
+        CLEAR: lv_class.
+        SELECT SINGLE oclss FROM tobj INTO lv_class WHERE objct = <ls_usr07_new>-objct.
+        " add information for found object
+        add_text( EXPORTING iv_type = '_CONCATENATE' iv_text = 'Object class:' CHANGING cv_text = lv_c ).
+        add_text( EXPORTING iv_type = '_AT_POS_AND_APPEND' iv_text = lv_class iv_pos = '15' CHANGING cv_text = lv_c cv_text_final = ev_text ).
+
+        " add found auth. check values of auth. object, store it in temp. internal table
+        CLEAR: lt_inttab.
+        ls_inttab-field = <ls_usr07_new>-fiel1. ls_inttab-value = <ls_usr07_new>-val01. APPEND ls_inttab TO lt_inttab.
+        ls_inttab-field = <ls_usr07_new>-fiel2. ls_inttab-value = <ls_usr07_new>-val02. APPEND ls_inttab TO lt_inttab.
+        ls_inttab-field = <ls_usr07_new>-fiel3. ls_inttab-value = <ls_usr07_new>-val03. APPEND ls_inttab TO lt_inttab.
+        ls_inttab-field = <ls_usr07_new>-fiel4. ls_inttab-value = <ls_usr07_new>-val04. APPEND ls_inttab TO lt_inttab.
+        ls_inttab-field = <ls_usr07_new>-fiel5. ls_inttab-value = <ls_usr07_new>-val05. APPEND ls_inttab TO lt_inttab.
+        ls_inttab-field = <ls_usr07_new>-fiel6. ls_inttab-value = <ls_usr07_new>-val06. APPEND ls_inttab TO lt_inttab.
+        ls_inttab-field = <ls_usr07_new>-fiel7. ls_inttab-value = <ls_usr07_new>-val07. APPEND ls_inttab TO lt_inttab.
+        ls_inttab-field = <ls_usr07_new>-fiel8. ls_inttab-value = <ls_usr07_new>-val08. APPEND ls_inttab TO lt_inttab.
+        ls_inttab-field = <ls_usr07_new>-fiel9. ls_inttab-value = <ls_usr07_new>-val09. APPEND ls_inttab TO lt_inttab.
+        ls_inttab-field = <ls_usr07_new>-fiel0. ls_inttab-value = <ls_usr07_new>-val10. APPEND ls_inttab TO lt_inttab.
+        SORT lt_inttab BY field value ASCENDING.
+        DELETE: lt_inttab WHERE value IS INITIAL, ADJACENT DUPLICATES FROM lt_inttab.
+
+        " in the next steps the auth. check values are added to output table
+        " first, add the header
+        add_text( EXPORTING iv_type = '_CONCATENATE' iv_text = 'Field:' CHANGING cv_text = lv_c ).
+        add_text( EXPORTING iv_type = '_AT_POS_AND_APPEND' iv_text = 'Value:' iv_pos = '15' CHANGING cv_text = lv_c cv_text_final = ev_text ).
+
+        " now add the auth. check values
+        LOOP AT lt_inttab ASSIGNING <ls_inttab>.
+          add_text( EXPORTING iv_type = '_CONCATENATE' iv_text = <ls_inttab>-field CHANGING cv_text = lv_c ).
+
+          IF <ls_inttab>-value <> space.
+            add_text( EXPORTING iv_type = '_AT_POS' iv_text = <ls_inttab>-value iv_pos = '15' CHANGING cv_text = lv_c ).
+          ENDIF.
+          add_text( EXPORTING iv_type = '_APPEND_LINE' CHANGING cv_text = lv_c cv_text_final = ev_text ).
+        ENDLOOP.
+
+        " add separator line
+        add_text( EXPORTING iv_type = '_CONCATENATE_AND_APPEND' iv_text = mc_separator CHANGING cv_text = lv_c cv_text_final = ev_text ).
+
+      ENDLOOP.
+
+    ENDIF.
+
+  ENDMETHOD.
